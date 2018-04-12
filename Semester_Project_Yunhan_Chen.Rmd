@@ -1,0 +1,205 @@
+---
+title: "Semester_Project"
+author: "Yunhan Chen"
+date: "3/28/2018"
+output: html_document
+---
+```{r}
+# load raw measurement data
+setwd("C:/Users/cheny/Documents/EE509")
+data<-read.csv("project/chin072.csv")
+```
+```{r,echo=FALSE}
+library(coda)
+library(rjags)
+```
+
+```{r}
+# Plot series
+matplot(data[,1],data[,2:58],type="l",main="Annual Tree Ring Width",xlab="year",ylab="width index")
+```
+
+```{r}
+se_l <- matrix(0,nrow=235,ncol=57) # a matrix to test the validity of each observation
+for(i in 1:235){
+  for(g in 1:57)
+se_l[i,g]<-is.na(data[i,g+1])
+}
+se_l2 <- matrix(0,nrow=2,ncol=57) # a matrix to store the starting and ending year of each series
+for(i in 1:234) {
+  for(g in 1:57) {
+    if(se_l[i,g]==1&&se_l[i+1,g]!=1){ # the starting year
+    se_l2[1,g]<-i+1773
+    }
+    else if (se_l[i,g]!=1&&se_l[i+1,g]==1){ # the ending year
+    se_l2[2,g]<-i+1773
+    }
+    else next
+  }
+}
+for (g in 1:57){  # find all series starting at 1774
+  if(se_l[1,g]!=1)
+    se_l2[1,g]<-1774
+}
+```
+
+```{r}
+# load climate data
+maxtemp<-read.csv("C:/Users/cheny/Documents/EE509/project/maxt.csv")
+mintemp<-read.csv("C:/Users/cheny/Documents/EE509/project/mint.csv")
+meantemp<-read.csv("C:/Users/cheny/Documents/EE509/project/meant.csv")
+preci<-read.csv("C:/Users/cheny/Documents/EE509/project/prec.csv")
+```
+
+```{r}
+# sort data
+data_ad<-matrix(0,ncol=sum(se_l2==2007),nrow=50)
+data_ad<-data[185:234,which(se_l2[2,]==2007)+1] ## generate data matrix that covers 1958-2007
+data_ad[which(data_ad==0,arr.ind = TRUE)]<-0.001 ## use very small value to represent missing value
+```
+
+```{r, echo=FALSE}
+uniregression <- "
+model{
+  beta ~ dmnorm(b0,vb)    ## prior on parameters
+  tau ~ dgamma(s1,s2)
+  tauI ~ dgamma(s3,s4)
+
+  for(i in 1:n){  ## loop over increments
+    alpha[i] ~ dnorm(0,tauI)
+    for(t in 1:nt){ ## loop over years
+    mu[t,i] <- beta[1] + beta[2]*x[t] + alpha[i]     ## process model
+    y[t,i]  ~ dnorm(mu[t,i],tau)		## data model
+    }
+  }
+}
+"
+```
+
+```{r, echo=FALSE}
+biregression <- "
+model{
+  beta ~ dmnorm(b0,vb)    ## slope of different climate variables
+  tau ~ dgamma(s1,s2)
+  tauI ~ dnorm(i1,i2)
+  for(i in 1:n){
+    alpha[i] ~ dnorm(0,tauI)
+    for(t in 1:nt){
+    if (y[i,t]==0) next
+    else{
+	  mu[i,t] <- beta[1]+beta[2]*x[i,t] + beta[3]*y[i,t-1] + alpha[i]     ## process model
+	  y[i,t]  ~ dnorm(mu[i,t],tau)		## data model
+    }
+    }
+  }
+}
+"
+```
+
+```{r, echo=FALSE}
+multiregression <- "
+model{
+  beta ~ dmnorm(b0,vb)    ## slope of different climate variables
+  tau ~ dgamma(s1,s2)
+  tauI ~ dgamma(s3,s4)
+  for(i in 1:n){
+    alpha[i] ~ dnorm(0,tauI)
+    for(t in 2:nt){
+	  mu[t,i] <- beta[1]+beta[2]*x[t,1] + beta[3]*y[i,t-1] + alpha[i]     ## process model
+	  y[t,i]  ~ dlnorm(mu[t,i],tau)		## data model
+    }
+  }
+}
+"
+```
+
+```{r}
+## initial conditions
+nchain = 3
+u.inits <- list()
+for(i in 1:nchain){
+ u.inits[[i]] <- list(beta = rnorm(2,0,0.001),alpha=rnorm(47,0,0.01),tau=rnorm(1,6,0.5),tauI=rnorm(1,6,0.5))
+}
+```
+
+```{r}
+## create data list
+datalist <- list( y = log(data_ad), n = 47, nt = 50)
+datalist$b0 <- as.vector(c(0,0))
+datalist$vb <- solve(diag(10000,2))
+datalist$s1 <- 0.001
+datalist$s2 <- 0.001
+datalist$s3 <- 0.001
+datalist$s4 <- 0.001
+
+## storage for MCMC output
+uthin<-array(rep(0,50000*100*12),c(50000,100,12))
+burn<-rep(0,times=12)
+effs<-matrix(0,nrow=4,ncol=12)
+beta<-array(rep(0,50000*50*12),c(50000,50,12))
+tau<-array(rep(0,50000*50*12),c(50000,50,12))
+gd<-list()
+dic<-list()
+```
+
+```{r}
+for(i in 1:12){
+datalist$x <- meantemp[,i+1]
+## specify model
+u.model<-list()
+u.model<- jags.model(file = textConnection(uniregression),
+                             data = datalist,
+                             inits = u.inits,
+                             n.chains = nchain)
+## execute model
+u.out   <- coda.samples (model = u.model,
+                           variable.names = c("beta","tau","tauI","alpha"),
+                           n.iter = 3000)
+save(u.out,file=paste0("uout",i,".RData"))
+
+#GBR diagnostics
+gelman.diag(u.out)
+
+#GBR diagnostics for burn-in
+GBR1 <- gelman.plot(u.out)
+## determine the first iteration after convergence
+burnin1 <- GBR1$last.iter[tail(which(GBR1$shrink[,1,2] > 1.1|GBR1$shrink[,2,2] > 1.1)|GBR1$shrink[,3,2]>1.1|GBR1$shrink[,4,2]>1.1,1)+1]
+## check for no burn-in case: If there is no burn-in case, the variable burnin1 starts at 1
+if(length(burnin1) == 0) burnin1 = 1
+## save the iterations after burnin to a new variable
+u.burn <- window(u.out,start=burnin1)
+## check diagnostics post burn-in
+gd[[i]]<-gelman.diag(u.burn)
+
+##effective size
+effs[,i]<-effectiveSize(u.burn)
+##burnin value
+burn[i]<-burnin1
+
+##thinning
+u.thin = window(u.burn,thin=10)
+thin.mat<-as.matrix(u.thin)
+
+#save output matrices
+tau[1:length(thin.mat[,1]),(i*2-1):(i*2),i] <- thin.mat[,grep("tau",colnames(thin.mat))]
+beta[1:length(thin.mat[,1]),(i*2-1):(i*2),i]<- thin.mat[,grep("beta",colnames(thin.mat))]
+uthin[1:length(thin.mat[,1]),(i*4-3):(i*4),i]<-thin.mat
+
+## DIC score
+dic[[i]]<-dic.samples(u.model,n.iter=100000,thin=10)
+
+save.image("uni.RData")
+
+}
+```
+
+
+
+```{r}
+## convert to matrix
+var.mat      <- as.matrix(u.out)
+
+## Pairwise scatter plots & correlation
+pairs(var.mat)	## pairs plot to evaluate parameter correlation
+cor(var.mat)
+```
