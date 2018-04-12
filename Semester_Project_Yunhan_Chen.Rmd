@@ -49,6 +49,7 @@ maxtemp<-read.csv("C:/Users/cheny/Documents/EE509/project/maxt.csv")
 mintemp<-read.csv("C:/Users/cheny/Documents/EE509/project/mint.csv")
 meantemp<-read.csv("C:/Users/cheny/Documents/EE509/project/meant.csv")
 preci<-read.csv("C:/Users/cheny/Documents/EE509/project/prec.csv")
+clim<-list(maxtemp,mintemp,meantemp,preci)
 ```
 
 ```{r}
